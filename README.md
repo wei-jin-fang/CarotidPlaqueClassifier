@@ -1,13 +1,17 @@
 # Carotid Plaque Classifier
 
-A deep-learning framework for **binary classification of carotid plaque stability**
-(stable `0` vs. unstable `1`) from volumetric ultrasound/imaging sequences.
+This repository contains three related components for carotid plaque research:
 
-The core model is a 3D ResNet whose slice-level features are enhanced by a
-**layer-relation attention module**, with an L2-normalized scaled-dot-product
-variant. Training follows a strict 10-fold stratified cross-validation protocol
-with a per-fold held-out validation set for checkpoint selection and a separate
-per-fold test set for reporting.
+1. A PyTorch framework for **binary plaque-stability classification** (stable
+   `0` vs. unstable `1`) from volumetric ultrasound/imaging sequences.
+2. An independent Transformer model for standardized numerical tabular features.
+3. R scripts for outpatient ultrasound ridge regression and survival analysis.
+
+The image-classification framework uses a 3D ResNet whose slice-level features
+can be enhanced by a **layer-relation attention module**, including an
+L2-normalized scaled-dot-product variant. Training follows a strict 10-fold
+stratified cross-validation protocol with a per-fold validation set for
+checkpoint selection and a separate per-fold test set for reporting.
 
 ---
 
@@ -20,6 +24,8 @@ per-fold test set for reporting.
 - [Installation](#installation)
 - [Usage](#usage)
 - [Available Models](#available-models)
+- [Tabular Feature Model](#tabular-feature-model)
+- [Ultrasound Ridge and Survival Analysis](#ultrasound-ridge-and-survival-analysis)
 - [Outputs](#outputs)
 - [Evaluation Metrics](#evaluation-metrics)
 
@@ -41,6 +47,10 @@ per-fold test set for reporting.
 - **Attention artifact export** for qualitative interpretation.
 - **Automatic logging**: per-fold best models, loss curves, CSV loss logs, and
   a JSON summary of all metrics.
+- **Numerical tabular Transformer** with feature-specific tokenization and a
+  learnable classification token.
+- **Outpatient statistical analysis** with IPCW-weighted ridge models,
+  time-to-event analyses, sensitivity analyses, and Kaplan-Meier plots.
 
 ---
 
@@ -56,6 +66,14 @@ CarotidPlaqueClassifier/
 │   ├── resnet3d_attention.py             # ResNet3D + LayerRelationModule
 │   ├── resnet3d_attention_scaling_l2.py  # L2-normalized scaling attention variant
 │   └── ablation_models.py                # ResNet3D / ResNet2D / ResNet2DAttention
+├── feature/
+│   └── models/
+│       └── tabular_transformer.py         # Transformer for numerical tabular features
+├── Ultrasound_Ridge_and_Survival_Code/
+│   ├── README.md                          # Detailed R workflow and input schema
+│   ├── reanalyze_outpatients_current.R    # Primary ridge and survival analysis
+│   ├── outpatient_sensitivity_current.R   # Sensitivity and supplementary analyses
+│   └── outpatient_km_ci_current.R          # Kaplan-Meier plots with confidence intervals
 ├── utils/
 │   ├── io.py                             # Experiment dir, config/history/log helpers
 │   ├── metrics.py                        # Classification metrics
@@ -127,6 +145,11 @@ Python 3.10+ is recommended.
 pip install torch numpy pandas openpyxl pillow scikit-learn matplotlib pyyaml opencv-python
 ```
 
+The outpatient analysis is separate from the Python workflow. Its original
+environment used R 4.3.3 with `survival`, `glmnet`, `Matrix`, `ggplot2`, and
+`ragg`; see its [dedicated README](Ultrasound_Ridge_and_Survival_Code/README.md)
+for the recorded package versions.
+
 ---
 
 ## Usage
@@ -168,6 +191,76 @@ Pass one of the following to `--model_name`:
 | `resnet2d_attention` | 2D ResNet + slice-relation attention (ablation) |
 
 ---
+
+## Tabular Feature Model
+
+[`feature/models/tabular_transformer.py`](feature/models/tabular_transformer.py)
+provides `TabularTransformerBinaryClassifier`, an independent binary classifier
+for standardized numerical features. It is not part of the image-model registry
+or the `train.py` workflow.
+
+For an input tensor shaped `[batch_size, num_features]`, the model:
+
+1. Converts every scalar into a feature-specific token using a learned weight
+   and bias.
+2. Prepends a learnable `[CLS]` token.
+3. Processes the token sequence with a pre-normalized Transformer encoder using
+   GELU activations.
+4. Sends the encoded `[CLS]` representation through a LayerNorm/MLP head and
+   returns one logit per sample with shape `[batch_size]`.
+
+```python
+import torch
+
+from feature.models.tabular_transformer import TabularTransformerBinaryClassifier
+
+model = TabularTransformerBinaryClassifier(
+    num_features=12,
+    d_model=64,
+    nhead=4,
+    num_layers=2,
+    dim_feedforward=128,
+    dropout=0.2,
+)
+
+standardized_features = torch.randn(8, 12)
+logits = model(standardized_features)  # shape: [8]
+probabilities = logits.sigmoid()
+```
+
+`d_model` must be divisible by `nhead`. Since the model returns raw logits,
+`torch.nn.BCEWithLogitsLoss` is the appropriate training loss for binary labels.
+
+---
+
+## Ultrasound Ridge and Survival Analysis
+
+[`Ultrasound_Ridge_and_Survival_Code/`](Ultrasound_Ridge_and_Survival_Code/)
+contains a separate R workflow for a 2,618-patient outpatient cohort. It uses a
+frozen CTA probability as a baseline input and does **not** train the image
+network in this repository.
+
+Prepare the approved, analysis-ready data as `analysis_data_private.csv` in a
+private working directory outside the Git checkout, then run:
+
+```bash
+Rscript Ultrasound_Ridge_and_Survival_Code/reanalyze_outpatients_current.R /path/to/private_run
+Rscript Ultrasound_Ridge_and_Survival_Code/outpatient_sensitivity_current.R /path/to/private_run
+Rscript Ultrasound_Ridge_and_Survival_Code/outpatient_km_ci_current.R /path/to/private_run
+```
+
+The primary script fits IPCW-weighted ridge logistic models at 12, 24, and 36
+months with grouped nested cross-validation and produces discrimination,
+calibration, decision-curve, Kaplan-Meier, and Cox analyses. The remaining
+scripts add sensitivity analyses and confidence-interval KM figures. Exact input
+fields, run-order details, and privacy requirements are documented in the
+[ultrasound analysis README](Ultrasound_Ridge_and_Survival_Code/README.md).
+
+No patient data, patient-level predictions, or intermediate analysis objects
+are included in this repository.
+
+---
+
 ## Outputs
 
 Each run creates a timestamped directory under `--output_root`:
