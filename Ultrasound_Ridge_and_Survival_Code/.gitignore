@@ -1,0 +1,7 @@
+*_private.csv
+*.rds
+*.RData
+*.Rhistory
+*.xlsx
+*.xls
+private_run/
